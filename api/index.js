@@ -20,6 +20,19 @@ function ensureDbConnected() {
 }
 
 module.exports = async (req, res) => {
-  await ensureDbConnected();
+  try {
+    await ensureDbConnected();
+  } catch (err) {
+    console.error('[api] MongoDB connection failed:', err);
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify({
+        error: 'Database connection failed',
+        detail: err.message,
+      })
+    );
+    return;
+  }
   return app(req, res);
 };
