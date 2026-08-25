@@ -1,0 +1,33 @@
+# Fly.io config for the backend. Rename `app` if it's already taken —
+# `fly launch` will offer to update this file for you.
+app = "esp-power-monitor-backend"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PORT = "4000"
+
+# This app holds a persistent ESP32 WebSocket connection and runs an
+# in-process heartbeat sweep (setInterval) for power-cut detection — it
+# must never be allowed to scale to zero or suspend, unlike a typical
+# stateless web service.
+[http_service]
+  internal_port = 4000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
