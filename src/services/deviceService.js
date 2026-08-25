@@ -2,6 +2,11 @@ const Device = require('../models/Device');
 const PowerEvent = require('../models/PowerEvent');
 const bus = require('../ws/bus');
 
+// How long a device gets a pass on outage detection after announcing a
+// planned restart — long enough to reboot and reconnect, short enough that
+// a genuine outage starting right after is still caught quickly.
+const PLANNED_RESTART_GRACE_MS = 30_000;
+
 function publicDevice(device) {
   return {
     id: device._id,
@@ -14,6 +19,7 @@ function publicDevice(device) {
     wakeTarget: device.wakeTarget,
     checkup: device.checkup,
     led: device.led,
+    restart: device.restart,
   };
 }
 
@@ -72,6 +78,7 @@ async function handleHeartbeat(device, { mainsPower, led } = {}) {
 async function triggerOutage(device, { reason }) {
   if (device.checkup.active) return; // manual override suppresses detection
   if (device.powerState === 'power_cut') return; // already open
+  if (device.restartingUntil && device.restartingUntil > new Date()) return; // planned restart in progress
 
   device.powerState = 'power_cut';
   if (reason === 'timeout') device.status = 'offline';
@@ -143,6 +150,11 @@ async function setLedState(device, blinking) {
   broadcastDeviceStatus(device);
 }
 
+async function beginPlannedRestart(device) {
+  device.restartingUntil = new Date(Date.now() + PLANNED_RESTART_GRACE_MS);
+  await device.save();
+}
+
 module.exports = {
   publicDevice,
   broadcastDeviceStatus,
@@ -152,4 +164,5 @@ module.exports = {
   startCheckup,
   endCheckup,
   setLedState,
+  beginPlannedRestart,
 };

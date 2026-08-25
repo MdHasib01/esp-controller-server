@@ -20,6 +20,9 @@ const updateDeviceSchema = z.object({
   wakeTarget: z
     .object({ mac: z.string().regex(macRegex).nullable().optional(), label: z.string().nullable().optional() })
     .optional(),
+  restart: z
+    .object({ intervalMinutes: z.number().int().min(1).max(1440).nullable() })
+    .optional(),
 });
 
 const checkupStartSchema = z.object({ note: z.string().optional() });
@@ -68,7 +71,17 @@ async function update(req, res, next) {
       if (body.wakeTarget.mac !== undefined) device.wakeTarget.mac = body.wakeTarget.mac;
       if (body.wakeTarget.label !== undefined) device.wakeTarget.label = body.wakeTarget.label;
     }
+    if (body.restart) {
+      device.restart.intervalMinutes = body.restart.intervalMinutes;
+    }
     await device.save();
+
+    if (body.restart) {
+      const conn = deviceConnections.get(device.deviceId);
+      if (conn && conn.readyState === conn.OPEN) {
+        conn.send(JSON.stringify({ type: 'restart_config', intervalMinutes: device.restart.intervalMinutes }));
+      }
+    }
 
     res.json({ device: deviceService.publicDevice(device) });
   } catch (err) {

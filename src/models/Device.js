@@ -33,6 +33,16 @@ const deviceSchema = new mongoose.Schema(
     led: {
       blinking: { type: Boolean, default: false },
     },
+
+    // Periodic self-restart to avoid the firmware freezing over long
+    // uptimes. null = disabled.
+    restart: {
+      intervalMinutes: { type: Number, default: null },
+    },
+    // Set right before a planned restart (device sends 'restarting') so the
+    // heartbeat-timeout sweep doesn't log the resulting brief disconnect as
+    // a real outage. Cleared on the device's next successful auth.
+    restartingUntil: { type: Date, default: null },
   },
   { timestamps: true }
 );

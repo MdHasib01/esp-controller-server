@@ -44,11 +44,13 @@ function onDeviceConnection(ws, req, deviceId) {
       device.status = 'online';
       device.lastHeartbeatAt = new Date();
       device.lastSeenOnlineAt = new Date();
+      device.restartingUntil = null; // reconnected — any planned-restart grace window is over
       if (device.powerState === 'unknown') device.powerState = device.checkup.active ? 'checkup' : 'ok';
       await device.save();
       deviceService.broadcastDeviceStatus(device);
 
       send(ws, { type: 'auth_ok' });
+      send(ws, { type: 'restart_config', intervalMinutes: device.restart.intervalMinutes });
       return;
     }
 
@@ -62,6 +64,9 @@ function onDeviceConnection(ws, req, deviceId) {
         break;
       case 'led_ack':
         await deviceService.setLedState(device, Boolean(msg.value));
+        break;
+      case 'restarting':
+        await deviceService.beginPlannedRestart(device);
         break;
       default:
         break;
