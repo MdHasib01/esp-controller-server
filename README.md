@@ -37,39 +37,38 @@ Server starts on `http://localhost:4000`.
 returns the device plus a one-time `apiKey` — save it, it's not retrievable
 again (only its bcrypt hash is stored).
 
-## Deploying (Fly.io)
+## Deploying (Vercel) — REST API only
 
-This app holds a persistent ESP32 WebSocket connection and runs an
-in-process heartbeat sweep for power-cut detection — it needs an
-always-on process, not a serverless/scale-to-zero platform. `Dockerfile`
-and `fly.toml` are set up for that.
+`vercel.json` + `api/index.js` deploy the Express REST API (`/health`,
+`/api/auth/*`, `/api/devices/*`) as a Vercel serverless function.
+
+**This does not include the WebSocket server or the heartbeat sweep.**
+Vercel's serverless functions are stateless and short-lived — they can't
+hold the ESP32's `/ws/device` connection open, serve `/ws/dashboard`, or
+run the `setInterval`-based power-cut sweep in `src/ws/heartbeatSweep.js`.
+Those still need an always-on process somewhere (a small Node host —
+Render/Railway/Fly.io/a VPS — running the existing `server.js` as-is).
+Point the ESP32 firmware and the frontend's `VITE_WS_BASE_URL` at that
+host; only REST calls (`VITE_API_BASE_URL`) go to Vercel.
 
 ```bash
-# one-time
-brew install flyctl   # or see https://fly.io/docs/flyctl/install/
-fly auth login
+npm i -g vercel
+vercel login
 
 # from backend/
-fly launch --no-deploy   # confirm/rename the app, pick a region; it'll detect fly.toml
-fly secrets set \
-  MONGO_URI="mongodb+srv://..." \
-  JWT_ACCESS_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")" \
-  JWT_REFRESH_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")" \
-  CORS_ORIGIN="https://your-frontend-domain"
+vercel link          # creates/links the Vercel project
+vercel env add MONGO_URI production
+vercel env add JWT_ACCESS_SECRET production
+vercel env add JWT_REFRESH_SECRET production
+vercel env add CORS_ORIGIN production   # your deployed frontend's origin
 
-fly deploy
+vercel --prod
 ```
 
 Notes:
-- `fly.toml` sets `auto_stop_machines = false` and `min_machines_running = 1`
-  — without this, Fly would suspend the machine when idle, which drops the
-  ESP32's WebSocket and stops the heartbeat sweep entirely.
-- `/health` is wired up as Fly's health check and reports `503` when MongoDB
-  isn't connected, so a bad DB connection surfaces as an unhealthy machine
-  rather than a silently broken app.
-- After deploying, update the ESP32 firmware's `wsServer` and the frontend's
-  `VITE_API_BASE_URL` / `VITE_WS_BASE_URL` to point at `https://<app>.fly.dev`
-  / `wss://<app>.fly.dev`.
+- `api/index.js` caches the Mongoose connection across warm invocations so
+  concurrent requests don't each open a fresh MongoDB connection.
+- `HEARTBEAT_TIMEOUT_MS` / `SWEEP_INTERVAL_MS` are irrelevant on this
+  deployment — the sweep that reads them doesn't run here.
 - Run `npm run seed:admin` once against the same `MONGO_URI` (locally, with
-  `.env` pointed at the production database) to create the admin login —
-  there's no seed step in the Docker image itself.
+  `.env` pointed at the production database) to create the admin login.
