@@ -13,6 +13,7 @@ function publicDevice(device) {
     lastSeenOnlineAt: device.lastSeenOnlineAt,
     wakeTarget: device.wakeTarget,
     checkup: device.checkup,
+    led: device.led,
   };
 }
 
@@ -31,14 +32,18 @@ async function findOpenEvent(deviceId) {
 /**
  * Called on every valid heartbeat/power_event message from a device's WebSocket.
  * mainsPower: true | false | undefined (undefined = firmware has no mains sensor)
+ * led: true | false | undefined — the device's actual current blink state,
+ *   reported so a reboot (which resets ledBlink to false on the firmware)
+ *   is reflected on the dashboard instead of showing a stale "on".
  */
-async function handleHeartbeat(device, mainsPower) {
+async function handleHeartbeat(device, { mainsPower, led } = {}) {
   const now = new Date();
   const wasPowerCut = device.powerState === 'power_cut';
 
   device.lastHeartbeatAt = now;
   device.lastSeenOnlineAt = now;
   device.status = 'online';
+  if (led !== undefined) device.led.blinking = led;
 
   if (mainsPower === false) {
     await device.save();
@@ -132,6 +137,12 @@ async function endCheckup(device) {
   broadcastDeviceStatus(device);
 }
 
+async function setLedState(device, blinking) {
+  device.led.blinking = blinking;
+  await device.save();
+  broadcastDeviceStatus(device);
+}
+
 module.exports = {
   publicDevice,
   broadcastDeviceStatus,
@@ -140,4 +151,5 @@ module.exports = {
   resolveOutage,
   startCheckup,
   endCheckup,
+  setLedState,
 };

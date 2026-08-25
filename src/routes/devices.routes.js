@@ -12,6 +12,7 @@ router.get('/:id', asyncHandler(devicesController.getOne));
 router.patch('/:id', asyncHandler(devicesController.update));
 
 router.post('/:id/wake', asyncHandler(devicesController.wake));
+router.post('/:id/led', asyncHandler(devicesController.setLed));
 router.post('/:id/checkup/start', asyncHandler(devicesController.startCheckup));
 router.post('/:id/checkup/end', asyncHandler(devicesController.endCheckup));
 

@@ -23,6 +23,7 @@ const updateDeviceSchema = z.object({
 });
 
 const checkupStartSchema = z.object({ note: z.string().optional() });
+const ledSchema = z.object({ value: z.boolean() });
 
 async function list(req, res) {
   const devices = await Device.find().sort({ createdAt: 1 });
@@ -89,6 +90,26 @@ async function wake(req, res) {
 
   conn.send(JSON.stringify({ type: 'wake_pc', mac: device.wakeTarget.mac }));
   res.status(202).json({ message: 'Wake command sent' });
+}
+
+async function setLed(req, res, next) {
+  try {
+    const { value } = ledSchema.parse(req.body);
+    const device = await Device.findById(req.params.id);
+    if (!device) return res.status(404).json({ error: 'Device not found' });
+
+    const conn = deviceConnections.get(device.deviceId);
+    if (!conn || conn.readyState !== conn.OPEN) {
+      return res.status(409).json({ error: 'Device is not connected — cannot relay LED command' });
+    }
+
+    conn.send(JSON.stringify({ type: 'led', value }));
+    // Optimistic — the device's led_ack (over WS) confirms/corrects this shortly after.
+    await deviceService.setLedState(device, value);
+    res.json({ device: deviceService.publicDevice(device) });
+  } catch (err) {
+    next(err);
+  }
 }
 
 async function startCheckup(req, res, next) {
@@ -184,4 +205,4 @@ async function stats(req, res) {
   });
 }
 
-module.exports = { list, getOne, create, update, wake, startCheckup, endCheckup, events, stats };
+module.exports = { list, getOne, create, update, wake, setLed, startCheckup, endCheckup, events, stats };

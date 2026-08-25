@@ -55,10 +55,13 @@ function onDeviceConnection(ws, req, deviceId) {
     switch (msg.type) {
       case 'heartbeat':
       case 'power_event':
-        await deviceService.handleHeartbeat(device, msg.mainsPower);
+        await deviceService.handleHeartbeat(device, { mainsPower: msg.mainsPower, led: msg.led });
         break;
       case 'wake_ack':
         bus.emit('wake_ack', { deviceId, success: Boolean(msg.success) });
+        break;
+      case 'led_ack':
+        await deviceService.setLedState(device, Boolean(msg.value));
         break;
       default:
         break;

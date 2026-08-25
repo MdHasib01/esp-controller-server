@@ -27,6 +27,12 @@ const deviceSchema = new mongoose.Schema(
       startedAt: { type: Date, default: null },
       note: { type: String, default: null },
     },
+
+    // On-board LED blink — a simple "is this specific unit actually
+    // reachable" check independent of the power-monitoring state.
+    led: {
+      blinking: { type: Boolean, default: false },
+    },
   },
   { timestamps: true }
 );
