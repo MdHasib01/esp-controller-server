@@ -9,8 +9,11 @@ function attachWebSocketServers(httpServer) {
 
   httpServer.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://localhost');
+    // Accept both /ws/* and /api/ws/* so the sockets work behind the same
+    // /api reverse-proxy prefix as the REST routes.
+    const pathname = url.pathname.replace(/^\/api(?=\/ws\/)/, '');
 
-    if (url.pathname === '/ws/device') {
+    if (pathname === '/ws/device') {
       const deviceId = url.searchParams.get('deviceId');
       if (!deviceId) {
         socket.destroy();
@@ -22,7 +25,7 @@ function attachWebSocketServers(httpServer) {
       return;
     }
 
-    if (url.pathname === '/ws/dashboard') {
+    if (pathname === '/ws/dashboard') {
       const token = url.searchParams.get('token');
       if (!token) {
         socket.destroy();
