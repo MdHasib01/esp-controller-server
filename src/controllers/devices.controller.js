@@ -1,6 +1,7 @@
 const { z } = require('zod');
 const Device = require('../models/Device');
 const PowerEvent = require('../models/PowerEvent');
+const ConnectionLog = require('../models/ConnectionLog');
 const deviceService = require('../services/deviceService');
 const { generateApiKey, hashApiKey } = require('../utils/apiKey');
 const { deviceConnections } = require('../ws/deviceSocket');
@@ -174,6 +175,31 @@ async function events(req, res) {
   res.json({ events: items, total, page, limit });
 }
 
+async function connections(req, res) {
+  const device = await Device.findById(req.params.id);
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+
+  const filter = { device: device._id };
+  if (req.query.from || req.query.to) {
+    filter.connectedAt = {};
+    if (req.query.from) filter.connectedAt.$gte = new Date(req.query.from);
+    if (req.query.to) filter.connectedAt.$lte = new Date(req.query.to);
+  }
+
+  const [total, items] = await Promise.all([
+    ConnectionLog.countDocuments(filter),
+    ConnectionLog.find(filter)
+      .sort({ connectedAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+  ]);
+
+  res.json({ connections: items, total, page, limit });
+}
+
 const RANGE_MS = {
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
@@ -209,13 +235,43 @@ async function stats(req, res) {
     Math.min(100, ((rangeMs - totalDowntimeMs) / rangeMs) * 100)
   );
 
+  const inRange = { device: device._id, connectedAt: { $gte: rangeStart } };
+  const [connectionCount, powerOnBootCount, bootTiming] = await Promise.all([
+    ConnectionLog.countDocuments(inRange),
+    // A power-on (or brownout) boot means the board itself lost power.
+    ConnectionLog.countDocuments({
+      ...inRange,
+      firstSinceBoot: true,
+      resetReason: { $in: ['power_on', 'brownout'] },
+    }),
+    ConnectionLog.aggregate([
+      { $match: { ...inRange, firstSinceBoot: true, bootToConnectMs: { $ne: null } } },
+      { $group: { _id: null, avg: { $avg: '$bootToConnectMs' } } },
+    ]),
+  ]);
+
   res.json({
     range,
     outageCount: outages.length,
     totalDowntimeMs,
     longestOutageMs,
     uptimePercent: Number(uptimePercent.toFixed(2)),
+    connectionCount,
+    powerOnBootCount,
+    avgBootToConnectMs: bootTiming[0] ? Math.round(bootTiming[0].avg) : null,
   });
 }
 
-module.exports = { list, getOne, create, update, wake, setLed, startCheckup, endCheckup, events, stats };
+module.exports = {
+  list,
+  getOne,
+  create,
+  update,
+  wake,
+  setLed,
+  startCheckup,
+  endCheckup,
+  events,
+  connections,
+  stats,
+};
