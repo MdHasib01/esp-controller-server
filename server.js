@@ -6,6 +6,7 @@ const { startHeartbeatSweep } = require('./src/ws/heartbeatSweep');
 const { closeOrphanedConnectionLogs } = require('./src/services/connectionLogService');
 const { repairStaleOutages } = require('./src/services/deviceService');
 const { startPushAlerts } = require('./src/services/pushService');
+const liveStatus = require('./src/services/liveStatusService');
 const { port } = require('./src/config/env');
 
 // Log instead of crashing — one bad async handler shouldn't drop every
@@ -22,6 +23,9 @@ async function main() {
 
   const repaired = await repairStaleOutages();
   if (repaired) console.log(`[server] closed ${repaired} outage event(s) that were stuck open`);
+
+  // Baseline for the live status pushed to dashboards — before devices can connect.
+  await liveStatus.seedAll();
 
   const server = http.createServer(app);
   attachWebSocketServers(server);

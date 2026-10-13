@@ -5,6 +5,7 @@ const PowerEvent = require('../models/PowerEvent');
 const ConnectionLog = require('../models/ConnectionLog');
 const deviceService = require('../services/deviceService');
 const timelineService = require('../services/timelineService');
+const liveStatus = require('../services/liveStatusService');
 const { generateApiKey, hashApiKey } = require('../utils/apiKey');
 const { deviceConnections } = require('../ws/deviceSocket');
 
@@ -232,6 +233,8 @@ async function deleteConnection(req, res) {
   }
 
   await log.deleteOne();
+  // An earlier session can be where the current connected period starts.
+  liveStatus.refresh(log.device);
   res.status(204).end();
 }
 
@@ -260,6 +263,7 @@ async function deleteSegment(req, res) {
 }
 
 async function timeline(req, res) {
+  const asOf = new Date(); // before the read — see getTimeline
   const device = await Device.findById(req.params.id);
   if (!device) return res.status(404).json({ error: 'Device not found' });
 
@@ -268,14 +272,16 @@ async function timeline(req, res) {
   const limit =
     req.query.limit === 'all' ? null : Math.min(100, Math.max(1, Number(req.query.limit) || 20));
 
-  res.json(
-    await timelineService.getTimeline(device, {
-      from: req.query.from ? new Date(req.query.from) : undefined,
-      to: req.query.to ? new Date(req.query.to) : undefined,
-      page,
-      limit,
-    })
-  );
+  const result = await timelineService.getTimeline(device, {
+    from: req.query.from ? new Date(req.query.from) : undefined,
+    to: req.query.to ? new Date(req.query.to) : undefined,
+    page,
+    limit,
+    asOf,
+  });
+  // Free correction for the pushed live status, should it have drifted.
+  liveStatus.reconcile(device._id, result.current, asOf);
+  res.json(result);
 }
 
 const RANGE_MS = {

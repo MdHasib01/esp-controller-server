@@ -1,9 +1,11 @@
 const ConnectionLog = require('../models/ConnectionLog');
 const bus = require('../ws/bus');
+const liveStatus = require('./liveStatusService');
 
 async function openConnectionLog(device, info) {
   const log = await ConnectionLog.create({ device: device._id, connectedAt: new Date(), ...info });
   bus.emit('connection_event', log);
+  liveStatus.sessionOpened(log);
   return log._id;
 }
 
@@ -17,6 +19,7 @@ async function closeConnectionLog(logId, { endReason, closeCode }) {
   log.closeCode = closeCode ?? null;
   await log.save();
   bus.emit('connection_event', log);
+  liveStatus.sessionClosed(log);
 }
 
 // Sessions left open by a previous server process — their sockets died with

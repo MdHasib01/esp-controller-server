@@ -79,11 +79,8 @@ function onDeviceConnection(ws, req, deviceId) {
     send(ws, { type: 'auth_ok' });
     send(ws, { type: 'restart_config', intervalMinutes: device.restart.intervalMinutes });
 
-    // A successful auth counts as the first heartbeat, so the dashboard flips
-    // to online (and closes any open outage) without waiting for the next one.
-    device.restartingUntil = null; // reconnected — any planned-restart grace window is over
-    await deviceService.handleHeartbeat(device, {});
-
+    // Logged first: opening the session is what flips the dashboard's live
+    // status to "connected", so it shouldn't wait on the outage bookkeeping.
     logId = await connectionLogService.openConnectionLog(device, {
       connectedAt,
       resetReason: typeof msg.resetReason === 'string' ? msg.resetReason : null,
@@ -92,9 +89,14 @@ function onDeviceConnection(ws, req, deviceId) {
       rssi: Number.isFinite(msg.rssi) ? msg.rssi : null,
       ip: clientIp(req),
     });
+
+    // A successful auth counts as the first heartbeat, so the dashboard flips
+    // to online (and closes any open outage) without waiting for the next one.
+    device.restartingUntil = null; // reconnected — any planned-restart grace window is over
+    await deviceService.handleHeartbeat(device, { at: connectedAt });
   }
 
-  async function handleMessage(msg) {
+  async function handleMessage(msg, receivedAt) {
     // Re-read every time: REST endpoints and the heartbeat sweep also write
     // this device, so a copy held since auth would be stale.
     const device = await Device.findById(deviceObjectId);
@@ -103,7 +105,11 @@ function onDeviceConnection(ws, req, deviceId) {
     switch (msg.type) {
       case 'heartbeat':
       case 'power_event':
-        await deviceService.handleHeartbeat(device, { mainsPower: msg.mainsPower, led: msg.led });
+        await deviceService.handleHeartbeat(device, {
+          mainsPower: msg.mainsPower,
+          led: msg.led,
+          at: receivedAt,
+        });
         break;
       case 'wake_ack':
         bus.emit('wake_ack', { deviceId, success: Boolean(msg.success) });
@@ -121,6 +127,7 @@ function onDeviceConnection(ws, req, deviceId) {
   }
 
   ws.on('message', (raw) => {
+    const receivedAt = new Date();
     let msg;
     try {
       msg = JSON.parse(raw.toString());
@@ -128,7 +135,7 @@ function onDeviceConnection(ws, req, deviceId) {
       return; // ignore malformed frames
     }
     if (authenticated) resetIdleTimer();
-    enqueue(() => (authenticated ? handleMessage(msg) : handleAuth(msg)));
+    enqueue(() => (authenticated ? handleMessage(msg, receivedAt) : handleAuth(msg)));
   });
 
   ws.on('close', (code) => {
@@ -138,10 +145,17 @@ function onDeviceConnection(ws, req, deviceId) {
       deviceConnections.delete(deviceId);
     }
     // Queued so it runs after an in-flight auth has created the log.
-    // Deliberately not flagging power_cut here — a socket close can be a
-    // benign reconnect. The heartbeat sweep is the single source of truth
-    // for "silence has gone on long enough to call it an outage."
+    // An ordinary close isn't flagged as a power cut — it can be a benign
+    // reconnect. A silence timeout is: it's the same condition the heartbeat
+    // sweep checks (re-verified atomically in triggerOutage), so flag it now
+    // rather than up to a sweep interval later — and before the log closes,
+    // so the dashboard goes straight to "power cut" instead of passing
+    // through "unreachable".
     enqueue(async () => {
+      if (ws.endReason === 'timeout' && deviceObjectId) {
+        const device = await Device.findById(deviceObjectId);
+        if (device) await deviceService.triggerOutage(device, { reason: 'timeout' });
+      }
       if (!logId) return;
       await connectionLogService.closeConnectionLog(logId, {
         endReason: ws.endReason || 'disconnected',

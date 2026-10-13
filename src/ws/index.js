@@ -1,11 +1,12 @@
 const { WebSocketServer } = require('ws');
 const { URL } = require('url');
 const { onDeviceConnection } = require('./deviceSocket');
-const { onDashboardConnection } = require('./dashboardSocket');
+const { onDashboardConnection, startDashboardKeepalive } = require('./dashboardSocket');
 
 function attachWebSocketServers(httpServer) {
   const deviceWss = new WebSocketServer({ noServer: true });
   const dashboardWss = new WebSocketServer({ noServer: true });
+  startDashboardKeepalive();
 
   httpServer.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://localhost');

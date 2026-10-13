@@ -96,8 +96,12 @@ function buildSegments(logs, now = Date.now(), { ongoingGapState = 'unreachable'
   }
 
   if (current) {
+    // Once the outage detector has called a power cut the reconnect grace is
+    // over — otherwise the timer would keep saying "connected" after the
+    // dashboard already alerted "power cut".
     const awaitingReconnect =
       current.endedAt !== null &&
+      ongoingGapState !== 'power_cut' &&
       BENIGN_END_REASONS.has(current.endReason) &&
       now - current.endedAt <= RECONNECT_GRACE_MS;
 
@@ -151,8 +155,11 @@ function summarize(segments, from, to, now) {
  * returned whole; the summary only counts the time inside the range.
  * limit: null returns every segment in range, oldest first (for charts);
  * otherwise a page of them, newest first.
+ * asOf: when the caller read `device` — the result reflects every change
+ * made before then, which is how a newer live_status push is told apart
+ * from a stale fetch.
  */
-async function getTimeline(device, { from, to, page = 1, limit = 20 } = {}) {
+async function getTimeline(device, { from, to, page = 1, limit = 20, asOf = new Date() } = {}) {
   // All logs, not just the range — a connected period can start long
   // before `from`, and merging needs its earlier sessions.
   const logs = await ConnectionLog.find({ device: device._id })
@@ -194,7 +201,15 @@ async function getTimeline(device, { from, to, page = 1, limit = 20 } = {}) {
     page,
     limit,
     serverNow: new Date(now),
+    asOf,
   };
 }
 
-module.exports = { getTimeline, buildSegments, RECONNECT_GRACE_MS };
+module.exports = {
+  getTimeline,
+  buildSegments,
+  effectiveEnd,
+  isPowerLossBoot,
+  BENIGN_END_REASONS,
+  RECONNECT_GRACE_MS,
+};

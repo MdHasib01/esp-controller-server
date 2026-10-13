@@ -3,6 +3,7 @@ const PowerEvent = require('../models/PowerEvent');
 const ConnectionLog = require('../models/ConnectionLog');
 const { heartbeatTimeoutMs } = require('../config/env');
 const bus = require('../ws/bus');
+const liveStatus = require('./liveStatusService');
 
 // How long a device gets a pass on outage detection after announcing a
 // planned restart — long enough to reboot and reconnect, short enough that
@@ -26,6 +27,7 @@ function publicDevice(device) {
 }
 
 function broadcastDeviceStatus(device) {
+  liveStatus.deviceUpdated(device);
   bus.emit('device_status', publicDevice(device));
 }
 
@@ -53,9 +55,11 @@ const OUTAGE_TYPES = ['outage', 'device_offline'];
  * led: true | false | undefined — the device's actual current blink state,
  *   reported so a reboot (which resets ledBlink to false on the firmware)
  *   is reflected on the dashboard instead of showing a stale "on".
+ * at: when the message arrived — the socket's silence timer counts from
+ *   then, so the outage check must too (not from after the DB round-trip).
  */
-async function handleHeartbeat(device, { mainsPower, led } = {}) {
-  const now = new Date();
+async function handleHeartbeat(device, { mainsPower, led, at } = {}) {
+  const now = at || new Date();
 
   device.lastHeartbeatAt = now;
   device.lastSeenOnlineAt = now;
