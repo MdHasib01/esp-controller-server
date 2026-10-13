@@ -43,6 +43,17 @@ const deviceSchema = new mongoose.Schema(
     // heartbeat-timeout sweep doesn't log the resulting brief disconnect as
     // a real outage. Cleared on the device's next successful auth.
     restartingUntil: { type: Date, default: null },
+
+    // Status-timeline periods the user deleted. Periods are derived from the
+    // connection logs rather than stored, so a deleted one is remembered
+    // here (by state + start) and left out of the timeline.
+    hiddenSegments: [
+      {
+        _id: false,
+        state: { type: String, required: true },
+        startedAt: { type: Date, required: true },
+      },
+    ],
   },
   { timestamps: true }
 );

@@ -33,6 +33,18 @@ function broadcastPowerEvent(event) {
   bus.emit('power_event', event);
 }
 
+/**
+ * One alert per power transition — fans out to dashboard sound/toast and to
+ * push notifications. kind: 'cut' | 'restored'.
+ */
+function emitPowerAlert(device, kind, fields) {
+  bus.emit('power_alert', {
+    kind,
+    device: { id: device._id, deviceId: device.deviceId, name: device.name },
+    ...fields,
+  });
+}
+
 const OUTAGE_TYPES = ['outage', 'device_offline'];
 
 /**
@@ -105,6 +117,8 @@ async function triggerOutage(device, { reason }) {
 
   broadcastDeviceStatus(claimed);
   broadcastPowerEvent(event);
+  // The atomic claim above guarantees this fires once per outage.
+  emitPowerAlert(claimed, 'cut', { eventType: event.type, at: now.toISOString() });
 }
 
 // Closes every open outage, not just the newest — a duplicate left open
@@ -116,14 +130,35 @@ async function resolveOutage(device, { automatic }) {
     endedAt: null,
   });
   const endedAt = new Date();
+  const closed = [];
   for (const event of openEvents) {
-    event.endedAt = endedAt;
-    event.durationMs = endedAt.getTime() - event.startedAt.getTime();
-    event.resolvedAutomatically = automatic;
-    await event.save();
-    broadcastPowerEvent(event);
+    // Close only if still open, so two heartbeats racing through here can't
+    // both count the same event (and both send a "power back" alert).
+    const updated = await PowerEvent.findOneAndUpdate(
+      { _id: event._id, endedAt: null },
+      {
+        $set: {
+          endedAt,
+          durationMs: endedAt.getTime() - event.startedAt.getTime(),
+          resolvedAutomatically: automatic,
+        },
+      },
+      { new: true }
+    );
+    if (!updated) continue;
+    closed.push(updated);
+    broadcastPowerEvent(updated);
   }
   broadcastDeviceStatus(device);
+
+  if (closed.length) {
+    const startedAt = new Date(Math.min(...closed.map((e) => e.startedAt.getTime())));
+    emitPowerAlert(device, 'restored', {
+      at: endedAt.toISOString(),
+      startedAt: startedAt.toISOString(),
+      durationMs: endedAt.getTime() - startedAt.getTime(),
+    });
+  }
 }
 
 /**

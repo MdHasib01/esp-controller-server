@@ -36,8 +36,10 @@ function bootAt(log) {
  *   power_cut   — offline, and it came back from a power-on boot
  *   unreachable — offline for any other reason, or still offline now
  * The last period is open (endedAt null) — it's what the live timer counts.
+ * ongoingGapState: what to call a gap that's still open — 'power_cut' once
+ * the outage detector has flagged the device, otherwise 'unreachable'.
  */
-function buildSegments(logs, now = Date.now()) {
+function buildSegments(logs, now = Date.now(), { ongoingGapState = 'unreachable' } = {}) {
   const segments = [];
   let current = null; // the 'connected' period being accumulated
 
@@ -105,9 +107,11 @@ function buildSegments(logs, now = Date.now()) {
       pushCurrent();
     } else {
       pushCurrent();
-      // Can't tell a power cut from a network drop until the board reports
-      // how it booted — so an ongoing gap is "unreachable".
-      segments.push({ state: 'unreachable', startedAt: current.endedAt, endedAt: null });
+      // The cause isn't confirmed until the board reports how it booted, so
+      // follow the outage detector: once it has called a power cut (the
+      // dashboard already alerted "power cut"), the live timer says so too.
+      // On reconnect the closed gap is re-classified from the boot reason.
+      segments.push({ state: ongoingGapState, startedAt: current.endedAt, endedAt: null });
     }
   }
 
@@ -157,13 +161,21 @@ async function getTimeline(device, { from, to, page = 1, limit = 20 } = {}) {
     .lean();
 
   const now = Date.now();
-  const all = buildSegments(logs, now);
+  const all = buildSegments(logs, now, {
+    ongoingGapState: device.powerState === 'power_cut' ? 'power_cut' : 'unreachable',
+  });
   const current = all.length ? all[all.length - 1] : null;
+
+  // Periods the user deleted from the history.
+  const hidden = new Set((device.hiddenSegments || []).map((h) => `${h.state}:${h.startedAt.getTime()}`));
 
   const fromMs = from ? from.getTime() : -Infinity;
   const toMs = to ? to.getTime() : Infinity;
   const inRange = all.filter(
-    (s) => s.startedAt.getTime() <= toMs && (s.endedAt ? s.endedAt.getTime() : now) >= fromMs
+    (s) =>
+      !hidden.has(`${s.state}:${s.startedAt.getTime()}`) &&
+      s.startedAt.getTime() <= toMs &&
+      (s.endedAt ? s.endedAt.getTime() : now) >= fromMs
   );
 
   const segments =

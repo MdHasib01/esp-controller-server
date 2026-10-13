@@ -20,6 +20,13 @@ module.exports = {
   heartbeatTimeoutMs: Number(process.env.HEARTBEAT_TIMEOUT_MS || 10000),
   sweepIntervalMs: Number(process.env.SWEEP_INTERVAL_MS || 2000),
 
+  // Web Push — push is disabled (not an error) when the keys are unset.
+  vapid: {
+    publicKey: process.env.VAPID_PUBLIC_KEY || '',
+    privateKey: process.env.VAPID_PRIVATE_KEY || '',
+    subject: process.env.VAPID_SUBJECT || 'mailto:admin@example.com',
+  },
+
   corsOrigin: (process.env.CORS_ORIGIN || 'http://localhost:5173')
     .split(',')
     .map((origin) => origin.trim())

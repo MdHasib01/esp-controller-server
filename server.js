@@ -5,6 +5,7 @@ const { attachWebSocketServers } = require('./src/ws');
 const { startHeartbeatSweep } = require('./src/ws/heartbeatSweep');
 const { closeOrphanedConnectionLogs } = require('./src/services/connectionLogService');
 const { repairStaleOutages } = require('./src/services/deviceService');
+const { startPushAlerts } = require('./src/services/pushService');
 const { port } = require('./src/config/env');
 
 // Log instead of crashing — one bad async handler shouldn't drop every
@@ -25,6 +26,7 @@ async function main() {
   const server = http.createServer(app);
   attachWebSocketServers(server);
   startHeartbeatSweep();
+  startPushAlerts();
 
   server.listen(port, () => {
     console.log(`[server] listening on :${port}`);

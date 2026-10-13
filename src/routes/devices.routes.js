@@ -20,5 +20,8 @@ router.get('/:id/events', asyncHandler(devicesController.events));
 router.get('/:id/connections', asyncHandler(devicesController.connections));
 router.get('/:id/timeline', asyncHandler(devicesController.timeline));
 router.get('/:id/stats', asyncHandler(devicesController.stats));
+router.delete('/:id/events/:eventId', asyncHandler(devicesController.deleteEvent));
+router.delete('/:id/connections/:logId', asyncHandler(devicesController.deleteConnection));
+router.delete('/:id/timeline/segments', asyncHandler(devicesController.deleteSegment));
 
 module.exports = router;

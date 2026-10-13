@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const { z } = require('zod');
 const Device = require('../models/Device');
 const PowerEvent = require('../models/PowerEvent');
@@ -201,6 +202,63 @@ async function connections(req, res) {
   res.json({ connections: items, total, page, limit });
 }
 
+async function deleteEvent(req, res) {
+  if (!mongoose.isValidObjectId(req.params.eventId)) {
+    return res.status(404).json({ error: 'Event not found' });
+  }
+  const event = await PowerEvent.findOne({ _id: req.params.eventId, device: req.params.id });
+  if (!event) return res.status(404).json({ error: 'Event not found' });
+  if (!event.endedAt) {
+    return res.status(409).json({ error: "This event is still ongoing — it can be deleted once it ends" });
+  }
+
+  await event.deleteOne();
+  res.status(204).end();
+}
+
+async function deleteConnection(req, res) {
+  if (!mongoose.isValidObjectId(req.params.logId)) {
+    return res.status(404).json({ error: 'Connection not found' });
+  }
+  const log = await ConnectionLog.findOne({ _id: req.params.logId, device: req.params.id });
+  if (!log) return res.status(404).json({ error: 'Connection not found' });
+  if (!log.disconnectedAt) {
+    return res.status(409).json({ error: 'This connection is still open' });
+  }
+  // The live status timer counts from the latest session.
+  const latest = await ConnectionLog.findOne({ device: log.device }).sort({ connectedAt: -1 }).select('_id');
+  if (latest && latest._id.equals(log._id)) {
+    return res.status(409).json({ error: 'The latest connection drives the live status and can’t be deleted' });
+  }
+
+  await log.deleteOne();
+  res.status(204).end();
+}
+
+const deleteSegmentSchema = z.object({
+  state: z.enum(['connected', 'unreachable', 'power_cut']),
+  startedAt: z.coerce.date(),
+});
+
+async function deleteSegment(req, res) {
+  const device = await Device.findById(req.params.id);
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+
+  const parsed = deleteSegmentSchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: 'state and startedAt are required' });
+  const { state, startedAt } = parsed.data;
+
+  const { segments } = await timelineService.getTimeline(device, { limit: null });
+  const segment = segments.find((s) => s.state === state && s.startedAt.getTime() === startedAt.getTime());
+  if (!segment) return res.status(404).json({ error: 'Period not found' });
+  if (!segment.endedAt) {
+    return res.status(409).json({ error: "This period is still ongoing — it can be deleted once it ends" });
+  }
+
+  await Device.updateOne({ _id: device._id }, { $push: { hiddenSegments: { state, startedAt } } });
+  res.status(204).end();
+}
+
 async function timeline(req, res) {
   const device = await Device.findById(req.params.id);
   if (!device) return res.status(404).json({ error: 'Device not found' });
@@ -293,6 +351,9 @@ module.exports = {
   endCheckup,
   events,
   connections,
+  deleteEvent,
+  deleteConnection,
+  deleteSegment,
   timeline,
   stats,
 };

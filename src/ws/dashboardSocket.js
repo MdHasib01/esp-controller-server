@@ -15,6 +15,7 @@ function broadcast(payload) {
 bus.on('device_status', (device) => broadcast({ type: 'device_status', device }));
 bus.on('power_event', (event) => broadcast({ type: 'power_event', event }));
 bus.on('wake_ack', ({ deviceId, success }) => broadcast({ type: 'wake_ack', deviceId, success }));
+bus.on('power_alert', (alert) => broadcast({ type: 'power_alert', alert }));
 bus.on('connection_event', (connection) => broadcast({ type: 'connection_event', connection }));
 
 function onDashboardConnection(ws, req, token) {
