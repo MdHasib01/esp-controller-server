@@ -3,6 +3,7 @@ const Device = require('../models/Device');
 const PowerEvent = require('../models/PowerEvent');
 const ConnectionLog = require('../models/ConnectionLog');
 const deviceService = require('../services/deviceService');
+const timelineService = require('../services/timelineService');
 const { generateApiKey, hashApiKey } = require('../utils/apiKey');
 const { deviceConnections } = require('../ws/deviceSocket');
 
@@ -200,6 +201,23 @@ async function connections(req, res) {
   res.json({ connections: items, total, page, limit });
 }
 
+async function timeline(req, res) {
+  const device = await Device.findById(req.params.id);
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+
+  res.json(
+    await timelineService.getTimeline(device, {
+      from: req.query.from ? new Date(req.query.from) : undefined,
+      to: req.query.to ? new Date(req.query.to) : undefined,
+      page,
+      limit,
+    })
+  );
+}
+
 const RANGE_MS = {
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
@@ -273,5 +291,6 @@ module.exports = {
   endCheckup,
   events,
   connections,
+  timeline,
   stats,
 };

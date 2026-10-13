@@ -18,6 +18,7 @@ router.post('/:id/checkup/end', asyncHandler(devicesController.endCheckup));
 
 router.get('/:id/events', asyncHandler(devicesController.events));
 router.get('/:id/connections', asyncHandler(devicesController.connections));
+router.get('/:id/timeline', asyncHandler(devicesController.timeline));
 router.get('/:id/stats', asyncHandler(devicesController.stats));
 
 module.exports = router;
