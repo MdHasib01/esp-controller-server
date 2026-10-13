@@ -14,7 +14,11 @@ const unsubscribeSchema = z.object({ endpoint: z.string().url() });
 const testSchema = z.object({ kind: z.enum(['cut', 'restored']).default('cut') });
 
 async function publicKey(req, res) {
-  res.json({ enabled: pushService.enabled, publicKey: pushService.publicKey || null });
+  res.json({
+    enabled: pushService.enabled,
+    publicKey: pushService.publicKey || null,
+    missing: pushService.missing,
+  });
 }
 
 async function subscribe(req, res) {

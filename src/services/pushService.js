@@ -3,7 +3,13 @@ const PushSubscription = require('../models/PushSubscription');
 const { vapid } = require('../config/env');
 const bus = require('../ws/bus');
 
-const enabled = Boolean(vapid.publicKey && vapid.privateKey);
+// Named in the public-key response so a misconfigured deploy says exactly
+// which env var to add instead of a vague "not configured".
+const missing = [
+  !vapid.publicKey && 'VAPID_PUBLIC_KEY',
+  !vapid.privateKey && 'VAPID_PRIVATE_KEY',
+].filter(Boolean);
+const enabled = missing.length === 0;
 if (enabled) webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
 
 // Power alerts are only worth delivering while they're still news; a phone
@@ -51,7 +57,7 @@ async function sendToAll(payload) {
  */
 function startPushAlerts() {
   if (!enabled) {
-    console.log('[push] VAPID keys not set — push notifications disabled');
+    console.log(`[push] ${missing.join(', ')} not set — push notifications disabled`);
     return;
   }
   bus.on('power_alert', (alert) => {
@@ -60,4 +66,4 @@ function startPushAlerts() {
   console.log('[push] power alerts enabled');
 }
 
-module.exports = { enabled, publicKey: vapid.publicKey, sendToAll, startPushAlerts };
+module.exports = { enabled, missing, publicKey: vapid.publicKey, sendToAll, startPushAlerts };
