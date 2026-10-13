@@ -1,5 +1,7 @@
 const Device = require('../models/Device');
 const PowerEvent = require('../models/PowerEvent');
+const ConnectionLog = require('../models/ConnectionLog');
+const { heartbeatTimeoutMs } = require('../config/env');
 const bus = require('../ws/bus');
 
 // How long a device gets a pass on outage detection after announcing a
@@ -31,9 +33,7 @@ function broadcastPowerEvent(event) {
   bus.emit('power_event', event);
 }
 
-async function findOpenEvent(deviceId) {
-  return PowerEvent.findOne({ device: deviceId, endedAt: null }).sort({ startedAt: -1 });
-}
+const OUTAGE_TYPES = ['outage', 'device_offline'];
 
 /**
  * Called on every valid heartbeat/power_event message from a device's WebSocket.
@@ -44,7 +44,6 @@ async function findOpenEvent(deviceId) {
  */
 async function handleHeartbeat(device, { mainsPower, led } = {}) {
   const now = new Date();
-  const wasPowerCut = device.powerState === 'power_cut';
 
   device.lastHeartbeatAt = now;
   device.lastSeenOnlineAt = now;
@@ -57,18 +56,18 @@ async function handleHeartbeat(device, { mainsPower, led } = {}) {
     return;
   }
 
-  if (wasPowerCut) {
-    // Device is back and either confirmed power (mainsPower === true) or,
-    // lacking a sensor, silence has ended so we assume power is back too.
-    device.powerState = device.checkup.active ? 'checkup' : 'ok';
-    await device.save();
-    await resolveOutage(device, { automatic: true });
-    return;
-  }
-
+  // Device is back and either confirmed power (mainsPower === true) or,
+  // lacking a sensor, silence has ended so we assume power is back too.
+  // Outage events are closed by query rather than by checking the (possibly
+  // stale) in-memory powerState: the heartbeat sweep works on its own copy of
+  // this device, and trusting either copy is what used to leave events open
+  // forever with the dashboard counting from them.
   device.powerState = device.checkup.active ? 'checkup' : 'ok';
+  // Written even when this copy already says ok/online — the stored value may not.
+  device.markModified('powerState');
+  device.markModified('status');
   await device.save();
-  broadcastDeviceStatus(device);
+  await resolveOutage(device, { automatic: true });
 }
 
 /**
@@ -76,34 +75,80 @@ async function handleHeartbeat(device, { mainsPower, led } = {}) {
  *       | 'timeout'  (heartbeat sweep found no signal for HEARTBEAT_TIMEOUT_MS)
  */
 async function triggerOutage(device, { reason }) {
-  if (device.checkup.active) return; // manual override suppresses detection
-  if (device.powerState === 'power_cut') return; // already open
-  if (device.restartingUntil && device.restartingUntil > new Date()) return; // planned restart in progress
+  const now = new Date();
 
-  device.powerState = 'power_cut';
-  if (reason === 'timeout') device.status = 'offline';
-  await device.save();
+  // Claim the ok -> power_cut transition atomically, re-checking every
+  // condition against the stored document. A heartbeat that lands between
+  // the sweep's read and this write makes the claim miss, so no outage is
+  // opened for a device that is actually back.
+  const filter = {
+    _id: device._id,
+    'checkup.active': false, // manual override suppresses detection
+    powerState: { $ne: 'power_cut' }, // already open
+    $or: [{ restartingUntil: null }, { restartingUntil: { $lte: now } }], // planned restart in progress
+  };
+  if (reason === 'timeout') {
+    filter.lastHeartbeatAt = { $lt: new Date(now.getTime() - heartbeatTimeoutMs) };
+  }
+  const set = { powerState: 'power_cut' };
+  if (reason === 'timeout') set.status = 'offline';
+
+  const claimed = await Device.findOneAndUpdate(filter, { $set: set }, { new: true });
+  if (!claimed) return;
+  Object.assign(device, set);
 
   const event = await PowerEvent.create({
     device: device._id,
     type: reason === 'timeout' ? 'device_offline' : 'outage',
-    startedAt: new Date(),
+    startedAt: now,
   });
 
-  broadcastDeviceStatus(device);
+  broadcastDeviceStatus(claimed);
   broadcastPowerEvent(event);
 }
 
+// Closes every open outage, not just the newest — a duplicate left open
+// would otherwise keep counting on the dashboard indefinitely.
 async function resolveOutage(device, { automatic }) {
-  const openEvent = await findOpenEvent(device._id);
-  if (openEvent) {
-    openEvent.endedAt = new Date();
-    openEvent.durationMs = openEvent.endedAt.getTime() - openEvent.startedAt.getTime();
-    openEvent.resolvedAutomatically = automatic;
-    await openEvent.save();
-    broadcastPowerEvent(openEvent);
+  const openEvents = await PowerEvent.find({
+    device: device._id,
+    type: { $in: OUTAGE_TYPES },
+    endedAt: null,
+  });
+  const endedAt = new Date();
+  for (const event of openEvents) {
+    event.endedAt = endedAt;
+    event.durationMs = endedAt.getTime() - event.startedAt.getTime();
+    event.resolvedAutomatically = automatic;
+    await event.save();
+    broadcastPowerEvent(event);
   }
   broadcastDeviceStatus(device);
+}
+
+/**
+ * One-off repair for outage events left open by the old stale-copy race.
+ * Each is closed at the device's first reconnect after it started (that's
+ * when it really ended); one still genuinely ongoing has no such reconnect
+ * and stays open.
+ */
+async function repairStaleOutages() {
+  const open = await PowerEvent.find({ type: { $in: OUTAGE_TYPES }, endedAt: null });
+  let repaired = 0;
+  for (const event of open) {
+    const reconnect = await ConnectionLog.findOne({
+      device: event.device,
+      connectedAt: { $gt: event.startedAt },
+    }).sort({ connectedAt: 1 });
+    if (!reconnect) continue;
+    event.endedAt = reconnect.connectedAt;
+    event.durationMs = event.endedAt.getTime() - event.startedAt.getTime();
+    event.resolvedAutomatically = true;
+    event.note = event.note || 'Closed by repair: was left open by a detection race';
+    await event.save();
+    repaired += 1;
+  }
+  return repaired;
 }
 
 async function startCheckup(device, note) {
@@ -165,4 +210,5 @@ module.exports = {
   endCheckup,
   setLedState,
   beginPlannedRestart,
+  repairStaleOutages,
 };

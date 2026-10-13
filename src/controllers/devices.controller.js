@@ -206,7 +206,9 @@ async function timeline(req, res) {
   if (!device) return res.status(404).json({ error: 'Device not found' });
 
   const page = Math.max(1, Number(req.query.page) || 1);
-  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+  // limit=all: every period in range, oldest first — for the dashboard charts
+  const limit =
+    req.query.limit === 'all' ? null : Math.min(100, Math.max(1, Number(req.query.limit) || 20));
 
   res.json(
     await timelineService.getTimeline(device, {

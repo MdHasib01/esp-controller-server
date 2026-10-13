@@ -3,10 +3,11 @@ const { heartbeatTimeoutMs } = require('../config/env');
 
 // A disconnect followed by a reconnect within this window counts as one
 // unbroken "connected" period when the device ended the session on purpose
-// (its 5-minute anti-freeze reboot) or the server bounced — neither is a
-// power cut. Long enough for boot + WiFi + auth.
+// (its 5-minute anti-freeze reboot) or the server bounced — neither is an
+// outage. Long enough for boot + WiFi + auth.
 const RECONNECT_GRACE_MS = 60_000;
 const BENIGN_END_REASONS = new Set(['planned_restart', 'replaced', 'server_restart']);
+const STATES = ['connected', 'unreachable', 'power_cut'];
 
 // 'timeout' sessions are only closed heartbeatTimeoutMs after the last
 // message, so the device really went dark that much earlier.
@@ -16,16 +17,31 @@ function effectiveEnd(log) {
   return Math.max(log.connectedAt.getTime(), end - heartbeatTimeoutMs);
 }
 
+// The board itself lost power: the session after the gap is the first since
+// a power-on/brownout boot. Anything else (WiFi drop, server unreachable,
+// software reboot) is only "unreachable" — the cause can't be confirmed.
+function isPowerLossBoot(log) {
+  return log.firstSinceBoot === true && ['power_on', 'brownout'].includes(log.resetReason);
+}
+
+function bootAt(log) {
+  const start = log.connectedAt.getTime();
+  return Number.isFinite(log.bootToConnectMs) ? start - log.bootToConnectMs : start;
+}
+
 /**
- * Turns the raw per-socket connection logs into alternating
- * 'connected' / 'power_cut' periods, oldest first. The last period is open
- * (endedAt null) — it's what the dashboard's live timer counts.
+ * Turns the raw per-socket connection logs into alternating periods, oldest
+ * first:
+ *   connected   — the device was online (scheduled reboots merged in)
+ *   power_cut   — offline, and it came back from a power-on boot
+ *   unreachable — offline for any other reason, or still offline now
+ * The last period is open (endedAt null) — it's what the live timer counts.
  */
 function buildSegments(logs, now = Date.now()) {
   const segments = [];
   let current = null; // the 'connected' period being accumulated
 
-  function closeCurrent() {
+  function pushCurrent() {
     segments.push({
       state: 'connected',
       startedAt: current.startedAt,
@@ -35,20 +51,27 @@ function buildSegments(logs, now = Date.now()) {
     });
   }
 
+  function startFrom(log, end) {
+    current = { startedAt: log.connectedAt.getTime(), endedAt: end, endReason: log.endReason, sessions: 1 };
+  }
+
   for (const log of logs) {
     const start = log.connectedAt.getTime();
     const end = log.disconnectedAt ? effectiveEnd(log) : null;
 
     if (!current) {
-      current = { startedAt: start, endedAt: end, endReason: log.endReason, sessions: 1 };
+      startFrom(log, end);
       continue;
     }
 
+    const powerLoss = isPowerLossBoot(log);
     const overlaps = current.endedAt === null || start <= current.endedAt;
     const quickReconnect =
       BENIGN_END_REASONS.has(current.endReason) && start - current.endedAt <= RECONNECT_GRACE_MS;
 
-    if (overlaps || quickReconnect) {
+    // A power-on boot always breaks the period, even when the new session
+    // overlaps the old one (the old socket hadn't timed out yet).
+    if (!powerLoss && (overlaps || quickReconnect)) {
       // Newer session is the authoritative one for how the period ends.
       if (current.endedAt === null || end === null || end > current.endedAt) {
         current.endedAt = end;
@@ -58,9 +81,16 @@ function buildSegments(logs, now = Date.now()) {
       continue;
     }
 
-    closeCurrent();
-    segments.push({ state: 'power_cut', startedAt: current.endedAt, endedAt: start });
-    current = { startedAt: start, endedAt: end, endReason: log.endReason, sessions: 1 };
+    // When the power came back is known (boot time); when it went is not
+    // always — bound it by the boot so the gap is never negative.
+    const gapStart = Math.max(
+      current.startedAt,
+      Math.min(current.endedAt ?? start, powerLoss ? bootAt(log) : start)
+    );
+    current.endedAt = gapStart;
+    pushCurrent();
+    segments.push({ state: powerLoss ? 'power_cut' : 'unreachable', startedAt: gapStart, endedAt: start });
+    startFrom(log, end);
   }
 
   if (current) {
@@ -72,19 +102,23 @@ function buildSegments(logs, now = Date.now()) {
     if (current.endedAt === null || awaitingReconnect) {
       current.endedAt = null;
       current.endReason = null;
-      closeCurrent();
+      pushCurrent();
     } else {
-      closeCurrent();
-      segments.push({ state: 'power_cut', startedAt: current.endedAt, endedAt: null });
+      pushCurrent();
+      // Can't tell a power cut from a network drop until the board reports
+      // how it booted — so an ongoing gap is "unreachable".
+      segments.push({ state: 'unreachable', startedAt: current.endedAt, endedAt: null });
     }
   }
 
-  return segments.map((s) => ({
-    ...s,
-    startedAt: new Date(s.startedAt),
-    endedAt: s.endedAt === null ? null : new Date(s.endedAt),
-    durationMs: (s.endedAt ?? now) - s.startedAt,
-  }));
+  return segments
+    .filter((s) => s.endedAt === null || s.endedAt > s.startedAt)
+    .map((s) => ({
+      ...s,
+      startedAt: new Date(s.startedAt),
+      endedAt: s.endedAt === null ? null : new Date(s.endedAt),
+      durationMs: (s.endedAt ?? now) - s.startedAt,
+    }));
 }
 
 // Portion of a segment that falls inside [from, to].
@@ -95,26 +129,15 @@ function overlapMs(segment, from, to, now) {
 }
 
 function summarize(segments, from, to, now) {
-  const summary = {
-    connectedMs: 0,
-    powerCutMs: 0,
-    connectedCount: 0,
-    powerCutCount: 0,
-    longestConnectedMs: 0,
-    longestPowerCutMs: 0,
-  };
+  const summary = {};
+  for (const state of STATES) summary[state] = { ms: 0, count: 0, longestMs: 0 };
 
   for (const segment of segments) {
     const ms = overlapMs(segment, from, to, now);
-    if (segment.state === 'connected') {
-      summary.connectedMs += ms;
-      summary.connectedCount += 1;
-      summary.longestConnectedMs = Math.max(summary.longestConnectedMs, ms);
-    } else {
-      summary.powerCutMs += ms;
-      summary.powerCutCount += 1;
-      summary.longestPowerCutMs = Math.max(summary.longestPowerCutMs, ms);
-    }
+    const bucket = summary[segment.state];
+    bucket.ms += ms;
+    bucket.count += 1;
+    bucket.longestMs = Math.max(bucket.longestMs, ms);
   }
   return summary;
 }
@@ -122,13 +145,15 @@ function summarize(segments, from, to, now) {
 /**
  * from/to: optional Date bounds. Segments overlapping the range are
  * returned whole; the summary only counts the time inside the range.
+ * limit: null returns every segment in range, oldest first (for charts);
+ * otherwise a page of them, newest first.
  */
 async function getTimeline(device, { from, to, page = 1, limit = 20 } = {}) {
   // All logs, not just the range — a connected period can start long
   // before `from`, and merging needs its earlier sessions.
   const logs = await ConnectionLog.find({ device: device._id })
     .sort({ connectedAt: 1 })
-    .select('connectedAt disconnectedAt endReason')
+    .select('connectedAt disconnectedAt endReason resetReason firstSinceBoot bootToConnectMs')
     .lean();
 
   const now = Date.now();
@@ -141,16 +166,22 @@ async function getTimeline(device, { from, to, page = 1, limit = 20 } = {}) {
     (s) => s.startedAt.getTime() <= toMs && (s.endedAt ? s.endedAt.getTime() : now) >= fromMs
   );
 
-  const newestFirst = inRange.slice().reverse();
-  const items = newestFirst.slice((page - 1) * limit, page * limit);
+  const segments =
+    limit === null
+      ? inRange
+      : inRange
+          .slice()
+          .reverse()
+          .slice((page - 1) * limit, page * limit);
 
   return {
     current: current && { state: current.state, since: current.startedAt },
     summary: summarize(inRange, fromMs, toMs, now),
-    segments: items,
-    total: newestFirst.length,
+    segments,
+    total: inRange.length,
     page,
     limit,
+    serverNow: new Date(now),
   };
 }
 
